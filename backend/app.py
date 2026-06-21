@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .live import LiveSession
-from .packets import list_interfaces, parse_pcap_bytes, parse_pcap_path
+from .nexsus import list_interfaces, parse_pcap_bytes, parse_pcap_path
 from .synth import build_sample_pcap_bytes
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
@@ -24,7 +24,7 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 MAX_UPLOAD = 250 * 1024 * 1024  # 250 MB
 DEFAULT_LIMIT = 50_000
 
-app = FastAPI(title="Packet Highway")
+app = FastAPI(title="NexusFlow Network Intelligence Engine")
 
 
 @app.middleware("http")
