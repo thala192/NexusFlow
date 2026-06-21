@@ -18,6 +18,12 @@ Instead of analyzing traffic through traditional packet logs and dashboards, Nex
 
 ---
 
+## 🌐 Live Demo
+NexusFlow is live and accessible online:
+🔗 https://nexusflow-3ogo.onrender.com
+Experience real-time 3D network traffic visualization, packet analytics, PCAP replay, and protocol-aware monitoring directly from your browser.
+
+
 ## Features
 
 ### Real-Time Traffic Visualization
