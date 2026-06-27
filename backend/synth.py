@@ -245,11 +245,145 @@ def gen_events(t0: float, duration: float, rng: random.Random) -> list[dict]:
             if rng.random() < 0.7:
                 ev.append(_ev(tt + rng.uniform(0.001, 0.01), HOME_IP, scanner, dp, sp, "TCP", 60, "RA"))
 
+    def arp_spoof_burst(t: float):
+        # the NAS's real MAC is briefly displaced by an attacker's — built
+        # directly (not via _ev/_make_event) so it bypasses the fixed
+        # _MAC_BY_IP lookup and can carry an attacker-chosen smac.
+        attacker_mac = f"de:ad:be:ef:{rng.randint(0, 255):02x}:{rng.randint(0, 255):02x}"
+
+        def arp_event(ts, psrc, smac):
+            return {
+                "ts": ts, "src": psrc, "dst": HOME_IP, "smac": smac, "dmac": HOME_MAC,
+                "sport": None, "dport": None, "transport": "ARP", "proto": "ARP",
+                "size": 42, "flags": "", "ttl": None, "icmp_type": None, "icmp_code": None,
+                "dns_id": None, "dns_qr": None, "dns_rcode": None, "dns_qname": None,
+                "seq": None, "plen": None, "sni": None, "dir": "in",
+            }
+        # the NAS announces itself normally once, then the attacker claims
+        # its address twice in quick succession — a textbook poisoning burst
+        ev.append(arp_event(t, NAS_IP, NAS_MAC))
+        ev.append(arp_event(t + rng.uniform(0.3, 0.8), NAS_IP, attacker_mac))
+        ev.append(arp_event(t + rng.uniform(1.0, 1.6), NAS_IP, attacker_mac))
+
+    _beacon_busy_until = {}  # c2_host:port -> ts when that key frees up
+
+    def beacon_session(t: float):
+        # malware-style check-in: same source port pattern, same destination,
+        # fired at a near-fixed interval with very little jitter — the one
+        # property that separates this from ordinary repeat web traffic.
+        #
+        # Guarded per-key (not globally, unlike healthcheck_poll's single
+        # fixed host) so multiple concurrent "implants" can still beacon to
+        # DIFFERENT hosts at once — only a same-key collision would corrupt
+        # the rolling-window jitter the way the unfixed healthcheck_poll did.
+        # With ~38 expected calls over a 50-address pool in a 900s run, a
+        # same-key collision is otherwise near-certain (birthday problem).
+        for _retry in range(5):
+            c2_host = f"203.0.113.{rng.randint(150, 199)}"
+            c2_port = rng.choice([443, 8443, 4444])
+            key = f"{c2_host}:{c2_port}"
+            if t >= _beacon_busy_until.get(key, 0.0):
+                break
+        else:
+            return  # five collisions in a row — skip rather than corrupt an existing session
+        interval = rng.uniform(20, 45)
+        tt = t
+        n_cycles = rng.randint(6, 9)
+        _beacon_busy_until[key] = t + interval * n_cycles * 1.05
+        for _ in range(n_cycles):
+            cport = rng.randint(49152, 65000)
+            rtt = rng.uniform(0.05, 0.15)
+            ev.append(_ev(tt, HOME_IP, c2_host, cport, c2_port, "TCP", 66, "S"))
+            ev.append(_ev(tt + rtt, c2_host, HOME_IP, c2_port, cport, "TCP", 66, "SA"))
+            ev.append(_ev(tt + rtt * 1.5, HOME_IP, c2_host, cport, c2_port, "TCP", 60, "A"))
+            # tiny check-in payload, then a quick clean close
+            ev.append(_ev(tt + rtt * 2, HOME_IP, c2_host, cport, c2_port, "TCP",
+                          rng.randint(80, 160), "PA"))
+            ev.append(_ev(tt + rtt * 2.4, c2_host, HOME_IP, c2_port, cport, "TCP",
+                          rng.randint(80, 200), "PA"))
+            tf = tt + rtt * 3
+            ev.append(_ev(tf, HOME_IP, c2_host, cport, c2_port, "TCP", 60, "FA"))
+            ev.append(_ev(tf + rtt, c2_host, HOME_IP, c2_port, cport, "TCP", 60, "FA"))
+            tt += interval * rng.uniform(0.97, 1.03)  # <4% jitter — deliberately too regular
+
+    _hc_busy_until = [0.0]  # mutable cell: blocks overlapping pollers (see below)
+
+    def healthcheck_poll(t: float):
+        # legitimate periodic traffic: a phone-home / heartbeat poller hitting
+        # its own dedicated cloud API host at a near-fixed interval.
+        # Deliberately built with the SAME low-jitter timing signature as
+        # beacon_session — this is the honest stress test of whether the
+        # beacon detector can tell C2 check-ins apart from ordinary
+        # heartbeats on timing alone. (It currently can't — see the
+        # detector's detail-panel hint, which says as much.)
+        #
+        # Guarded so it can't overlap itself: the action-selection loop in
+        # gen_events fires roughly every 1/(7*0.01)=~14s on expectation, far
+        # shorter than one poll cycle's own 6-9 x 30-60s span, so without a
+        # guard a 900s run ends up with dozens of independent polling loops
+        # all hitting the same host concurrently — which collapses into a
+        # near-continuous stream (median gap ~2s, not 30-60s) and produces a
+        # *different*, accidental low-jitter signal than the one intended.
+        # One real device has one ongoing heartbeat loop, not dozens.
+        if t < _hc_busy_until[0]:
+            return
+        api_host = "198.51.100.40"
+        interval = rng.choice([30, 60])
+        tt = t
+        n_cycles = rng.randint(6, 9)
+        _hc_busy_until[0] = t + interval * n_cycles * 1.05
+        for _ in range(n_cycles):
+            cport = rng.randint(49152, 65000)
+            rtt = rng.uniform(0.03, 0.1)
+            ev.append(_ev(tt, HOME_IP, api_host, cport, 443, "TCP", 66, "S"))
+            ev.append(_ev(tt + rtt, api_host, HOME_IP, 443, cport, "TCP", 66, "SA"))
+            ev.append(_ev(tt + rtt * 1.5, HOME_IP, api_host, cport, 443, "TCP", 60, "A"))
+            ev.append(_ev(tt + rtt * 2, HOME_IP, api_host, cport, 443, "TCP",
+                          rng.randint(60, 120), "PA"))
+            ev.append(_ev(tt + rtt * 2.4, api_host, HOME_IP, 443, cport, "TCP",
+                          rng.randint(60, 100), "PA"))
+            tf = tt + rtt * 3
+            ev.append(_ev(tf, HOME_IP, api_host, cport, 443, "TCP", 60, "FA"))
+            ev.append(_ev(tf + rtt, api_host, HOME_IP, 443, cport, "TCP", 60, "FA"))
+            tt += interval * rng.uniform(0.98, 1.02)  # also <4% jitter, same as beacon_session
+
+    def dns_tunnel_burst(t: float):
+        # data smuggled out one subdomain label at a time: long, high-entropy
+        # leaf labels under a single attacker-controlled apex domain.
+        apex = rng.choice(["telemetry-sync.net", "cdn-relay.io", "edge-cache.cloud"])
+        server = rng.choice(DNS_SERVERS)
+        tt = t
+        alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+        for _ in range(rng.randint(20, 30)):
+            tt += rng.uniform(0.1, 0.5)
+            label = "".join(rng.choice(alphabet) for _ in range(rng.randint(28, 48)))
+            qp = rng.randint(49152, 65000)
+            did = rng.randint(0, 65535)
+            ev.append(_ev(tt, HOME_IP, server, qp, 53, "UDP", rng.randint(80, 140),
+                          dns={"id": did, "qr": 0, "qname": f"{label}.{apex}"}))
+            ev.append(_ev(tt + rng.uniform(0.012, 0.05), server, HOME_IP, 53, qp, "UDP",
+                          rng.randint(96, 160),
+                          dns={"id": did, "qr": 1, "rcode": 0, "qname": f"{label}.{apex}"}))
+
+    def syn_flood_burst(t: float):
+        # many spoofed/distributed sources hammering one local port at once —
+        # a denial-of-service pattern, not a single scanner's reconnaissance.
+        target_port = rng.choice([80, 443])
+        tt = t
+        for _ in range(rng.randint(30, 50)):
+            tt += rng.uniform(0.005, 0.03)
+            src = f"203.0.113.{rng.randint(2, 250)}"
+            sp = rng.randint(1024, 65000)
+            ev.append(_ev(tt, src, HOME_IP, sp, target_port, "TCP", 60, "S"))
+
     actions = [(web_session, 0.30), (dns_only, 0.11), (ping, 0.06),
-               (ssh_chatter, 0.07), (udp_noise, 0.11), (tcp_noise, 0.05),
-               (smb_burst, 0.08), (snmp_poll, 0.07), (rdp_session, 0.04),
+               (ssh_chatter, 0.07), (udp_noise, 0.09), (tcp_noise, 0.05),
+               (smb_burst, 0.07), (snmp_poll, 0.06), (rdp_session, 0.04),
                (dhcp_renew, 0.02), (filtered_syn, 0.02), (refused_conn, 0.02),
-               (scan_burst, 0.01), (dns_fail, 0.03), (ssdp_noise, 0.01)]
+               (scan_burst, 0.01), (dns_fail, 0.03), (ssdp_noise, 0.01),
+               (arp_spoof_burst, 0.004), (beacon_session, 0.006),
+               (dns_tunnel_burst, 0.004), (syn_flood_burst, 0.004),
+               (healthcheck_poll, 0.01)]
     t = t0
     end = t0 + duration
     while t < end:
@@ -302,7 +436,7 @@ def build_sample_pcap_bytes(duration: float = 90.0, seed: int = 7) -> bytes:
 
         from scapy.layers.dns import DNS, DNSQR, DNSRR
         from scapy.layers.inet import ICMP, IP, TCP, UDP
-        from scapy.layers.l2 import Ether
+        from scapy.layers.l2 import ARP, Ether
         from scapy.packet import Raw
         from scapy.utils import wrpcap
 
@@ -313,6 +447,15 @@ def build_sample_pcap_bytes(duration: float = 90.0, seed: int = 7) -> bytes:
         flow_seq: dict[tuple, int] = {}  # realistic advancing seq per flow
         for e in events:
             eth = Ether(src=e["smac"], dst=e["dmac"])
+            if e["transport"] == "ARP":
+                # ARP has no IP layer of its own — psrc/pdst carry the
+                # addresses, hwsrc the (possibly spoofed) claimed MAC.
+                arp = ARP(op=2, hwsrc=e["smac"], psrc=e["src"],
+                          hwdst=e["dmac"], pdst=e["dst"])
+                p = eth / arp
+                p.time = e["ts"]
+                pkts.append(p)
+                continue
             ip = IP(src=e["src"], dst=e["dst"], ttl=e["ttl"])
             pad_to_size = True
             if e["transport"] == "TCP":

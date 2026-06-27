@@ -65,6 +65,7 @@
           <option value="__demo__">Demo traffic </option>
         </select>
         <input id="bpf-input" type="text" placeholder="BPF filter, e.g. tcp port 443"
+               title="Capture filter — restricts what the OS captures at all (set before pressing START). For narrowing what's already on screen, use the filter box on the right instead."
                class="bg-slate-800/80 border border-slate-700 rounded-md px-2 py-1.5 w-44 placeholder:text-slate-500" />
         <button id="btn-capture"
                 class="px-4 py-1.5 rounded-md font-bold bg-emerald-500/90 hover:bg-emerald-400 text-emerald-950 transition-colors">
@@ -81,10 +82,16 @@
         <button id="btn-sample" class="px-3 py-1.5 rounded-md bg-fuchsia-500/20 border border-fuchsia-500/50 text-fuchsia-300 hover:bg-fuchsia-500/30 transition-colors">
           ✨ Load sample capture
         </button>
-        <input id="filter-input" type="text" placeholder="Filter: ip:1.2.3.4 port:443 proto:dns sni:example.com"
-               class="bg-slate-800/80 border border-slate-700 rounded-md px-2 py-1.5 w-96 placeholder:text-slate-500 text-slate-200" />
         <span id="pcap-meta" class="text-slate-400"></span>
       </div>
+
+      <!-- Display filter: shared by both live and PCAP modes. In live mode
+           it also narrows what feeds the health/anomaly panels, same as a
+           BPF capture filter would; in PCAP mode it re-scrubs the loaded
+           file. -->
+      <input id="filter-input" type="text" placeholder="Filter: ip:1.2.3.4 port:443 proto:dns sni:example.com"
+             title="Narrows what's shown AND what feeds the health/threat panels. Live mode: applies going forward. PCAP mode: re-scrubs the loaded file."
+             class="bg-slate-800/80 border border-slate-700 rounded-md px-2 py-1.5 w-96 placeholder:text-slate-500 text-slate-200" />
 
       <div class="grow"></div>
       <button id="btn-shot" class="px-2 py-1 rounded-md text-[10px] font-bold border border-slate-700 text-slate-400 hover:text-slate-200 transition-colors" title="save a PNG of the current view">📷</button>
@@ -154,6 +161,19 @@
             <div class="flex justify-between"><span class="text-slate-400">⛔ NXDOMAIN</span><b id="dnsh-nx" class="text-red-400">0</b></div>
             <div class="flex justify-between"><span class="text-slate-400">⛔ SERVFAIL</span><b id="dnsh-sf" class="text-rose-400">0</b></div>
             <div class="flex justify-between col-span-2"><span class="text-slate-400">⚠ timeouts</span><b id="dnsh-to" class="text-amber-400">0</b></div>
+          </div>
+        </section>
+
+        <section id="threat-panel">
+          <h2 class="text-[10px] font-bold tracking-[0.2em] text-slate-400 mb-2">THREAT DETECTION <span class="text-slate-600">heuristic</span></h2>
+          <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs num">
+            <div class="flex justify-between"><span class="text-slate-400" title="one source probing many ports on a target">🚨 port scan</span><b id="threat-portscan" class="text-slate-200">0</b></div>
+            <div class="flex justify-between"><span class="text-slate-400" title="one source probing one port across many hosts">🚨 sweep</span><b id="threat-sweep" class="text-slate-200">0</b></div>
+            <div class="flex justify-between"><span class="text-slate-400" title="regular-interval connections — possible C2 check-ins">📡 beaconing</span><b id="threat-beacon" class="text-slate-200">0</b></div>
+            <div class="flex justify-between"><span class="text-slate-400" title="long/high-entropy/high-rate DNS queries — possible data exfiltration">🕳 DNS tunnel</span><b id="threat-dnstunnel" class="text-slate-200">0</b></div>
+            <div class="flex justify-between"><span class="text-slate-400" title="flood of unanswered inbound SYNs">🌊 SYN flood</span><b id="threat-synflood" class="text-slate-200">0</b></div>
+            <div class="flex justify-between"><span class="text-slate-400" title="one IP claimed by two different MAC addresses">🎭 ARP spoof</span><b id="threat-arpspoof" class="text-slate-200">0</b></div>
+            <div class="flex justify-between col-span-2 pt-1 border-t border-slate-800"><span class="text-slate-400">total flagged</span><b id="threat-total" class="text-emerald-400 font-bold">0</b></div>
           </div>
         </section>
 

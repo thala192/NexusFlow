@@ -1,7 +1,7 @@
 
 import * as THREE from 'three';
 import {
-  FAIL_RED, FLAG_COLORS, HALF_LEN, HIGHWAY, LANES, LANE_REPR, LANE_SPEED,
+  ANOMALY_COLORS, FAIL_RED, FLAG_COLORS, HALF_LEN, HIGHWAY, LANES, LANE_REPR, LANE_SPEED,
   PROTO_COLORS, TYPE_SPECS, flowKeyOf, laneFor, sublaneX, vehicleTypeFor,
 } from './config.js';
 import { FlarePool, LabelPool, VehiclePool } from './vehicles.js';
@@ -39,6 +39,7 @@ export class TrafficController {
     this.tails = new Map();     // `${lane}|${dir}|${sub}` -> last spawned rec
     this.lastSub = new Map();   // `${lane}|${dir}` -> sub used last (alternate files)
     this.pendingAgg = new Map();// `${lane}|${dir}` -> accumulating burst
+    this.alertsByKey = new Map(); // `${kind}|${target}` -> active siren rec
     this.spawned = 0;
     this.aggregatedPkts = 0;    // packets that rode inside a convoy
     this.highlight = null;      // {type:'flow'|'host', key} — click to spotlight
@@ -266,6 +267,50 @@ export class TrafficController {
     });
   }
 
+  /** Threat-detection siren: a response vehicle patrols the shoulder for the
+   *  anomaly's lifetime, independent of lane traffic. Repeats against the
+   *  same kind+target refresh/intensify the existing siren rather than
+   *  spawning a new one, the same stacking idea as spawnFlare. */
+  spawnAlert(event) {
+    const key = `${event.kind}|${event.target}`;
+    const existing = this.alertsByKey.get(key);
+    if (existing && this.pools.siren.active.has(existing.idx)) {
+      existing.meta.attempts = (existing.meta.attempts ?? 1) + 1;
+      existing.meta.extra = event.extra;
+      existing.alertBorn = performance.now() / 1000; // refresh its TTL
+      return existing;
+    }
+    const dirSign = event.pkt?.dir === 'in' ? 1 : -1;
+    const color = ANOMALY_COLORS[event.kind] ?? FAIL_RED;
+    const rec = this.pools.siren.spawn({
+      x: dirSign * (this.shoulderX + 2.4), // just outboard of parked flares, still on-road
+      dirSign,
+      speed: LANE_SPEED.ICMP * 0.55, // slower than lane traffic — patrolling, not transiting
+      color,
+      meta: { ...event, anomaly: true, attempts: 1 },
+      len: TYPE_SPECS.siren.len,
+      yBase: 0,
+      beaconColor: 0xffffff,
+    });
+    rec.lane = 'shoulder';
+    rec.dir = event.pkt?.dir ?? 'out';
+    rec.alertBorn = performance.now() / 1000;
+    this.spawned++;
+    this.alertsByKey.set(key, rec);
+    return rec;
+  }
+
+  /** Sirens age out after a flat TTL regardless of lane exit math, since
+   *  they don't represent a single packet's journey. */
+  expireAlerts(t) {
+    for (const [key, rec] of this.alertsByKey) {
+      if (rec.gone || t - rec.alertBorn > 14) {
+        if (!rec.gone) this.pools.siren.release(rec.idx);
+        this.alertsByKey.delete(key);
+      }
+    }
+  }
+
   /** Click-to-spotlight: sel = {type:'flow'|'host', key} or null.
    *  Matching vehicles keep their color, the rest of the road dims. */
   setHighlight(sel) {
@@ -304,6 +349,7 @@ export class TrafficController {
     this.flushAggs();
     for (const pool of Object.values(this.pools)) pool.update(dt, t);
     this.flares.update(dt, t);
+    this.expireAlerts(t);
 
     // convoy count labels track their vehicles
     for (const [li, rec] of this.labeled) {
@@ -336,5 +382,6 @@ export class TrafficController {
     for (const g of this.glow) g.mat.opacity = 0;
     for (const pool of Object.values(this.pools)) pool.clear();
     this.flares.clear();
+    this.alertsByKey.clear();
   }
 }

@@ -1,5 +1,5 @@
 
-import { flowKeyOf } from './config.js';
+import { ANOMALY_LABELS, flowKeyOf } from './config.js';
 import { createScene } from './scene.js';
 import { buildHighway } from './highway.js';
 import { TrafficController } from './traffic.js';
@@ -7,6 +7,8 @@ import { Picker } from './picking.js';
 import { StatsEngine } from './stats.js';
 import { FlowTracker } from './flows.js';
 import { DnsTracker } from './dns.js';
+import { AnomalyTracker } from './anomaly.js';
+import { FlowLog } from './flowlog.js';
 import { Playback } from './playback.js';
 import { PacketFilter } from './filter.js';
 import { LiveSource, fetchInterfaces, fetchSample, uploadPcap } from './sources.js';
@@ -20,8 +22,10 @@ const traffic = new TrafficController(scene, laneX);
 const stats = new StatsEngine(60);
 const flows = new FlowTracker(3);
 const dns = new DnsTracker(5);
+const anomaly = new AnomalyTracker();
+const flowlog = new FlowLog();
 const playback = new Playback();
-let pcapFilter = new PacketFilter('');
+let activeFilter = new PacketFilter('');
 
 let mode = 'live';
 let liveDropped = 0;
@@ -37,6 +41,8 @@ function trackPacket(p) {
   if (ev) traffic.spawnFlare(ev);
   const dnsEv = dns.add(p);
   if (dnsEv) traffic.spawnDnsFlare(dnsEv);
+  for (const a of anomaly.add(p)) traffic.spawnAlert(a);
+  flowlog.add(p);
 }
 
 function ingestPacket(p) {
@@ -49,6 +55,8 @@ function resetWorld() {
   stats.reset();
   flows.reset();
   dns.reset();
+  anomaly.reset();
+  flowlog.reset();
   liveDropped = 0;
   statusRing.length = 0; // counters restarted — stale baselines would go negative
   frozen = false;
@@ -66,8 +74,9 @@ const live = new LiveSource({
   },
   onPackets: (items, dropped) => {
     if (mode !== 'live') return;
-    for (const p of items) trackPacket(p); // analysis first (retrans/SNI marks)
-    if (!frozen) traffic.ingestBatch(items, 110); // frozen road: count, don't spawn
+    const kept = activeFilter.isEmpty() ? items : items.filter((p) => activeFilter.matches(p));
+    for (const p of kept) trackPacket(p); // analysis first (retrans/SNI marks)
+    if (!frozen) traffic.ingestBatch(kept, 110); // frozen road: count, don't spawn
     liveDropped = dropped;
   },
   onError: (msg) => ui.toast(msg, 'error'),
@@ -170,8 +179,16 @@ const ui = new UI({
       nxdomain: 'Names that do not exist — typos, dead domains, broken search lists.',
       servfail: 'The resolver failed these lookups — upstream or DNSSEC trouble.',
       dnstimeout: 'Resolvers that never answered at all.',
+      portscan: 'One source probing many ports on a target — classic reconnaissance.',
+      sweep: 'One source probing the same port across many hosts — a network sweep.',
+      beacon: 'A host calling out to the same destination at suspiciously regular intervals. Malware C2 looks like this, but so do legitimate heartbeats — timing alone can\'t tell them apart.',
+      dnstunnel: 'Unusually long, random-looking, or high-volume subdomain queries — a common way to smuggle data through DNS.',
+      synflood: 'A flood of unanswered inbound SYNs — denial-of-service or an aggressive scanner.',
+      arpspoof: 'The same IP address claimed by two different MAC addresses — a hallmark of ARP cache poisoning.',
     };
-    const source = ['nxdomain', 'servfail', 'dnstimeout'].includes(kind) ? dns : flows;
+    const dnsKinds = ['nxdomain', 'servfail', 'dnstimeout'];
+    const anomalyKinds = ['portscan', 'sweep', 'beacon', 'dnstunnel', 'synflood', 'arpspoof'];
+    const source = dnsKinds.includes(kind) ? dns : anomalyKinds.includes(kind) ? anomaly : flows;
     ui.showHealthList(title, source.recent(kind), hints[kind]);
   },
   onStatusClick() {
@@ -184,21 +201,33 @@ const ui = new UI({
         : 'No active issues. Verdict turns amber/red on TCP failures, DNS failures, packet loss, broadcast storms, or server-side drops.');
   },
   onFilterChange(filterStr) {
-    if (mode !== 'pcap' || !playback.loaded) return;
-    pcapFilter = new PacketFilter(filterStr);
-    resetWorld(); // rebuild vehicles with new filter
-    // Rewind to current position to re-populate with filtered packets
-    playback.seekFrac(playback.progress);
+    if (mode === 'pcap' && !playback.loaded) return; // nothing to filter yet
+    activeFilter = new PacketFilter(filterStr);
+    resetWorld(); // clear stale unfiltered stats/flows/anomalies either way
+    if (mode === 'pcap') {
+      // Rewind to current position to re-populate with filtered packets
+      playback.seekFrac(playback.progress);
+    }
+    // live mode: nothing to rewind — the filter simply applies to packets
+    // from this point forward, same as a fresh capture start would.
+  },
+  onViewConversation(flowKey) {
+    const conv = flowlog.get(flowKey);
+    ui.showConversation(flowKey, conv, flows.sniFor(flowKey));
   },
 });
 
 const picker = new Picker(canvas, camera, traffic, (meta) => {
   // enrich with the flow's TLS server name when known
-  if (meta && !meta.aggregate && !meta.flowEvent && !meta.sni) {
+  if (meta && !meta.aggregate && !meta.flowEvent && !meta.anomaly && !meta.sni) {
     meta._sni = flows.sniFor(flowKeyOf(meta));
   }
   ui.showDetail(meta);
   // spotlight the clicked packet's conversation (breakdowns spotlight their SYN's)
+  if (meta?.anomaly) {
+    traffic.setHighlight(meta.src ? { type: 'host', key: meta.src } : null);
+    return;
+  }
   const flowPkt = meta?.flowEvent ? meta.syn : meta;
   const key = flowPkt && !flowPkt.aggregate ? flowKeyOf(flowPkt) : null;
   traffic.setHighlight(key ? { type: 'flow', key } : null);
@@ -226,7 +255,7 @@ function loadTimeline(data) {
 }
 
 // Debug/automation handle (read-only access for testing)
-window.__ph = { scene, camera, traffic, playback, stats, flows, dns, picker: () => picker };
+window.__ph = { scene, camera, traffic, playback, stats, flows, dns, anomaly, flowlog, picker: () => picker };
 
 ui.setMode('live');
 (function loadInterfaces(attempt = 0) {
@@ -251,7 +280,7 @@ function step(now, render) {
 
   if (mode === 'pcap' && playback.loaded) {
     for (const p of playback.tick(dt)) {
-      if (pcapFilter.matches(p)) ingestPacket(p);
+      if (activeFilter.matches(p)) ingestPacket(p);
     }
     if (render) ui.updatePlayback(playback);
   }
@@ -281,6 +310,7 @@ function step(now, render) {
     const statsNow = mode === 'pcap' ? (playback.loaded ? playback.t : 0) : Date.now() / 1000;
     for (const ev of flows.tick(statsNow)) traffic.spawnFlare(ev);
     for (const ev of dns.tick(statsNow)) traffic.spawnDnsFlare(ev);
+    anomaly.tick(statsNow);
     const snap = stats.snapshot(statsNow);
     ui.renderStats(snap, {
       counts: flows.counts,
@@ -302,7 +332,7 @@ function step(now, render) {
     statusRing.push({
       t: statsNow, est: c.established, half: c.halfOpen, ref: c.refused,
       retrans: c.retrans, fail: dc.nxdomain + dc.servfail + dc.timeouts,
-      ok: dc.ok, pkts: snap.totalPkts,
+      ok: dc.ok, pkts: snap.totalPkts, anomalies: anomaly.totalCount,
     });
     while (statusRing.length > 2 && statusRing[0].t < statsNow - 62) statusRing.shift();
     const base = statusRing[0];
@@ -314,6 +344,7 @@ function step(now, render) {
       dnsFail: dc.nxdomain + dc.servfail + dc.timeouts - base.fail,
       dnsOk: dc.ok - base.ok,
       pkts: snap.totalPkts - base.pkts,
+      anomalies: anomaly.totalCount - base.anomalies,
     };
     const reasons = [];
     let level = 0; // 0 ok, 1 degraded, 2 problem
@@ -324,8 +355,14 @@ function step(now, render) {
     if (w.pkts > 300 && w.retrans / w.pkts > 0.02) { reasons.push('packet loss (retransmissions)'); level = Math.max(level, 1); }
     if (snap.bcastPps > 50) { reasons.push('broadcast storm'); level = 2; }
     if (liveDropped > 0) { reasons.push('view incomplete (capture drops)'); level = Math.max(level, 1); }
+    if (w.anomalies > 0) {
+      const kinds = [...new Set(anomaly.log.filter((e) => e.ts >= base.t).map((e) => ANOMALY_LABELS[e.kind] ?? e.kind))];
+      reasons.push(kinds.length ? kinds.join(', ') : 'anomalous traffic pattern');
+      level = 2;
+    }
     currentReasons = reasons;
     ui.setStatus(level === 2 ? 'problem' : level === 1 ? 'degraded' : 'ok', reasons);
+    ui.renderThreats(anomaly.counts);
     ui.hud({
       fps,
       active: traffic.activeCount(),

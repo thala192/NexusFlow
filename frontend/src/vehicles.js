@@ -112,6 +112,17 @@ const BUILDERS = {
     wheel(0.5, 0.34, 1.0, 0.5, -1.0), wheel(0.5, 0.34, -1.0, 0.5, -1.0),
     wheel(0.5, 0.34, 1.0, 0.5, -4.0), wheel(0.5, 0.34, -1.0, 0.5, -4.0),
   ]),
+  // Anomaly/threat alert: armored incident-response SUV, raised stance,
+  // full-width roof light bar (wider/taller than the police cruiser's so it
+  // reads as "responding to something", not "directing traffic").
+  siren: () => mergeGeometries([
+    box(2.15, 1.0, 4.6, 0, 1.05, -0.2, DARK),       // armored body, dark livery
+    box(1.85, 0.7, 1.85, 0, 1.85, -0.3, GLASS),     // raised cabin glass
+    box(1.6, 0.16, 0.5, 0, 2.28, -0.3, DARK),       // light-bar base, full roof width
+    box(2.3, 0.22, 5.0, 0, 0.58, -0.2, 0xb91c1c),   // low skirt accent (fixed dark-red, not tinted)
+    wheel(0.5, 0.34, 1.02, 0.5, 1.55), wheel(0.5, 0.34, -1.02, 0.5, 1.55),
+    wheel(0.5, 0.34, 1.02, 0.5, -1.95), wheel(0.5, 0.34, -1.02, 0.5, -1.95),
+  ]),
 };
 
 const _dummy = new THREE.Object3D();
@@ -122,7 +133,7 @@ const POLICE_BLUE = new THREE.Color(0x3b82f6);
 // headlight/taillight strips per type: [half-width of light placement]
 const LIGHT_X = {
   motorcycle: 0, sedan: 0.62, van: 0.72, truck: 0.78,
-  police: 0.62, signal: 0.55, cart: 0.42, convoy: 0.75,
+  police: 0.62, signal: 0.55, cart: 0.42, convoy: 0.75, siren: 0.7,
 };
 
 // White up front, red at the rear — with bloom these read as real traffic
@@ -156,7 +167,7 @@ export class VehiclePool {
     const spec = TYPE_SPECS[type];
     this.type = type;
     this.cap = spec.cap;
-    this.hasBeacon = type === 'police' || type === 'signal';
+    this.hasBeacon = type === 'police' || type === 'signal' || type === 'siren';
 
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.2, roughness: 0.55 });
     this.mesh = new THREE.InstancedMesh(BUILDERS[type](), mat, this.cap);
@@ -274,7 +285,7 @@ export class VehiclePool {
       this.mesh.setMatrixAt(rec.idx, _dummy.matrix);
       if (this.lights) this.lights.setMatrixAt(rec.idx, _dummy.matrix);
       if (this.beacons) {
-        _dummy.position.y = y + (this.type === 'police' ? 1.85 : 1.72);
+        _dummy.position.y = y + (this.type === 'police' ? 1.85 : this.type === 'siren' ? 2.5 : 1.72);
         _dummy.scale.set(grow, grow, grow);
         _dummy.updateMatrix();
         this.beacons.setMatrixAt(rec.idx, _dummy.matrix);
@@ -285,10 +296,13 @@ export class VehiclePool {
     if (this.lights) this.lights.instanceMatrix.needsUpdate = true;
     if (this.beacons) {
       this.beacons.instanceMatrix.needsUpdate = true;
-      this.beaconMat.opacity = 0.3 + 0.7 * Math.abs(Math.sin(t * 9));
-      // police: whole bar alternates red/blue; signal cars: per-instance flag color
+      this.beaconMat.opacity = 0.3 + 0.7 * Math.abs(Math.sin(t * (this.type === 'siren' ? 14 : 9)));
+      // police: whole bar alternates red/blue; signal cars: per-instance flag
+      // color; siren: whole bar alternates red/blue at urgent double-speed
       if (this.type === 'police') {
         this.beaconMat.color.copy(Math.floor(t * 4) % 2 ? POLICE_RED : POLICE_BLUE);
+      } else if (this.type === 'siren') {
+        this.beaconMat.color.copy(Math.floor(t * 8) % 2 ? POLICE_RED : POLICE_BLUE);
       }
     }
   }

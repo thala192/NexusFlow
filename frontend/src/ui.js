@@ -1,5 +1,5 @@
 
-import { FAIL_RED, FLAG_COLORS, FLAG_NAMES, LEGEND, PROTO_CSS, THEME, isBroadcast } from './config.js';
+import { ANOMALY_LABELS, FAIL_RED, FLAG_COLORS, FLAG_NAMES, LEGEND, PROTO_CSS, THEME, flowKeyOf, isBroadcast } from './config.js';
 
 const hex = (n) => '#' + n.toString(16).padStart(6, '0');
 import { drawHistogram, drawSparkline } from './histogram.js';
@@ -51,6 +51,8 @@ export class UI {
       'tcph-est', 'tcph-pending', 'tcph-half', 'tcph-refused', 'tcph-rst',
       'tcph-retries', 'tcph-retrans', 'tcph-rtt', 'tcph-bar',
       'dnsh-ok', 'dnsh-nx', 'dnsh-sf', 'dnsh-to', 'dnsh-rtt',
+      'threat-panel', 'threat-portscan', 'threat-sweep', 'threat-beacon',
+      'threat-dnstunnel', 'threat-synflood', 'threat-arpspoof', 'threat-total',
       'status-pill', 'btn-theme', 'btn-shot', 'frozen-pill', 'tcph-open',
       'detail-panel', 'detail-body', 'detail-close', 'playback-bar', 'btn-play',
       'sel-speed', 'time-cur', 'time-total', 'time-abs', 'scrub', 'hist-canvas',
@@ -74,6 +76,10 @@ export class UI {
     this.el['sel-speed'].onchange = (e) => this.cb.onSpeedChange(parseFloat(e.target.value));
     this.el['detail-close'].onclick = () => this.cb.onDetailClose();
     this.el['filter-input'].oninput = (e) => this.cb.onFilterChange(e.target.value);
+    this.el['detail-body'].addEventListener('click', (e) => {
+      const key = e.target.closest('[data-flowkey]')?.dataset.flowkey;
+      if (key) this.cb.onViewConversation(key);
+    });
 
     const scrub = this.el['scrub'];
     scrub.addEventListener('pointerdown', () => { this.scrubbing = true; });
@@ -111,6 +117,12 @@ export class UI {
       'dnsh-nx': ['nxdomain', 'NXDOMAIN names'],
       'dnsh-sf': ['servfail', 'SERVFAIL lookups'],
       'dnsh-to': ['dnstimeout', 'DNS timeouts'],
+      'threat-portscan': ['portscan', 'Port scans'],
+      'threat-sweep': ['sweep', 'Network sweeps'],
+      'threat-beacon': ['beacon', 'Beaconing (possible C2)'],
+      'threat-dnstunnel': ['dnstunnel', 'DNS tunneling'],
+      'threat-synflood': ['synflood', 'SYN floods'],
+      'threat-arpspoof': ['arpspoof', 'ARP spoofing'],
     };
     for (const [id, [kind, title]] of Object.entries(drill)) {
       const row = this.el[id]?.parentElement;
@@ -179,6 +191,7 @@ export class UI {
       <div class="text-slate-400">🚨 Breakdowns on the shoulder = failures
         (<span class="text-amber-300">no answer</span> ·
         <span style="color:${hex(FAIL_RED)}">refused / bad name</span>) — repeats grow them; click for the story</div>
+      <div class="text-slate-400">🚓 Dark SUV on the shoulder, red/blue light bar = a detected threat pattern — click it for the evidence</div>
       <div class="text-slate-500 mt-1">right side → inbound · left side → outbound · ×N road-train = burst · lane glow = load</div>
       <div class="text-slate-500">⏱ same-lane spacing = real inter-arrival timing · click a vehicle or talker to spotlight</div>`);
     this.el['legend-list'].innerHTML = rows.join('');
@@ -310,10 +323,64 @@ export class UI {
   showDetail(meta) {
     if (!meta) { this.el['detail-panel'].classList.add('hidden'); return; }
     let html;
-    if (meta.flowEvent) html = this.flowDetail(meta);
+    if (meta.anomaly) html = this.anomalyDetail(meta);
+    else if (meta.flowEvent) html = this.flowDetail(meta);
     else if (meta.aggregate) html = this.convoyDetail(meta);
     else html = this.packetDetail(meta);
     this.el['detail-body'].innerHTML = html;
+    this.el['detail-panel'].classList.remove('hidden');
+  }
+
+  /** Full per-packet history for one flow — the "conversation view".
+   *  `conv` is a FlowLog record ({pkts, bytesOut, bytesIn, firstTs, lastTs})
+   *  or null if nothing was retained (flow too old, or this click came from
+   *  a synthetic/derived meta with no matching real packets logged). */
+  showConversation(flowKey, conv, sni) {
+    if (!conv) {
+      this.el['detail-body'].innerHTML = `
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <span class="badge bg-slate-700/60 text-slate-300">💬 CONVERSATION</span>
+        </div>
+        <p class="text-slate-400">No packet history retained for this conversation —
+        it may have happened too long ago, or before this view was opened.
+        The conversation log keeps the most recent activity per flow, not a
+        full historical record.</p>`;
+      this.el['detail-panel'].classList.remove('hidden');
+      return;
+    }
+    const [a, b] = flowKey.split('|');
+    const n = conv.pkts.length;
+    const span = ((conv.lastTs - conv.firstTs) * 1000).toFixed(0);
+    const retransN = conv.pkts.filter((p) => p.retrans).length;
+    const rows = conv.pkts.map((p) => {
+      const flagStr = p.flags ? p.flags.split('').map((f) => FLAG_NAMES[f] ?? f).join('+') : '';
+      const arrow = p.dir === 'out' ? '→' : '←';
+      const tint = p.retrans ? 'text-red-400' : p.flags?.includes('R') ? 'text-amber-400' : 'text-slate-300';
+      return `
+        <div class="num font-mono text-[10px] ${tint} py-1 border-b border-slate-800/60 flex justify-between gap-2">
+          <span class="shrink-0">${esc(fmtTime(p.ts))}</span>
+          <span class="shrink-0">${arrow}</span>
+          <span class="grow truncate">${esc(p.proto)}${flagStr ? ' [' + esc(flagStr) + ']' : ''}</span>
+          <span class="shrink-0">${esc((p.size ?? 0).toLocaleString())}B</span>
+          ${p.retrans ? '<span class="shrink-0">🔁</span>' : ''}
+        </div>`;
+    }).join('');
+    this.el['detail-body'].innerHTML = `
+      <div class="flex items-center gap-2 mb-2 flex-wrap">
+        <span class="badge bg-cyan-500/20 text-cyan-300">💬 CONVERSATION</span>
+        ${retransN > 0 ? `<span class="badge bg-red-500/20 text-red-300">🔁 ${retransN} retransmission${retransN > 1 ? 's' : ''}</span>` : ''}
+      </div>
+      <p class="text-slate-400 mb-2">Showing the last ${n} packet${n > 1 ? 's' : ''} seen on this
+      conversation${n >= 60 ? ' (log capped — earlier packets have rolled off)' : ''}.</p>
+      ${this.row('Endpoints', `${esc(a)} ⇄ ${esc(b)}`)}
+      ${sni ? this.row('Server name (SNI)', esc(sni)) : ''}
+      ${this.row('Window', `${esc(fmtTime(conv.firstTs))} → ${esc(fmtTime(conv.lastTs))}`)}
+      ${this.row('Span', `${span} ms`)}
+      ${this.row('Sent', fmtBytes(conv.bytesOut))}
+      ${this.row('Received', fmtBytes(conv.bytesIn))}
+      <div class="text-slate-500 mt-2 mb-1">Packet sequence (oldest first):</div>
+      ${rows}
+    `;
     this.el['detail-panel'].classList.remove('hidden');
   }
 
@@ -329,6 +396,20 @@ export class UI {
     return dir === 'in'
       ? '<span class="badge bg-cyan-500/20 text-cyan-300">▼ INBOUND</span>'
       : '<span class="badge bg-fuchsia-500/20 text-fuchsia-300">▲ OUTBOUND</span>';
+  }
+
+  /** "View full conversation" button — only renders when the packet has
+   *  ports to build a flow key from (skips ICMP/ARP, which have none). */
+  conversationButton(p) {
+    if (!p) return '';
+    const key = flowKeyOf(p);
+    if (!key) return '';
+    return `
+      <button data-flowkey="${esc(key)}"
+        class="mt-2 mb-1 w-full text-center px-3 py-1.5 rounded-md bg-cyan-500/15 border border-cyan-500/40
+               text-cyan-300 hover:bg-cyan-500/25 transition-colors text-xs font-semibold">
+        💬 View full conversation
+      </button>`;
   }
 
   packetDetail(p) {
@@ -361,6 +442,7 @@ export class UI {
       ${dnsRow}
       ${sni ? this.row('Server name (SNI)', esc(sni)) : ''}
       ${this.row('Packet #', esc('#' + p.id))}
+      ${this.conversationButton(p)}
     `;
   }
 
@@ -410,6 +492,7 @@ export class UI {
       ${m.rst ? this.row('Refused after', esc(`${((m.rst.ts - p.ts) * 1000).toFixed(1)} ms`)) : ''}
       ${this.row('Source MAC', esc(p.smac))}
       ${this.row('TTL', esc(p.ttl ?? '—'))}
+      ${this.conversationButton(p)}
     `;
   }
 
@@ -437,7 +520,58 @@ export class UI {
       ${this.row('Client', q ? `${esc(q.src)}:${esc(q.sport)}` : '—')}
       ${this.row('Resolver', esc(q ? q.dst : r?.src))}
       ${this.row('Txn id', esc(ref.dns_id ?? '—'))}
+      ${this.conversationButton(q ?? r)}
     `;
+  }
+
+  anomalyDetail(m) {
+    const severityBadge = m.severity === 'high'
+      ? '<span class="badge bg-red-500/20 text-red-300">🚨 ACTIVE THREAT</span>'
+      : '<span class="badge bg-amber-500/20 text-amber-300">⚠ SUSPICIOUS PATTERN</span>';
+    const hints = {
+      portscan: 'One source probing many ports on a target in a short window — classic reconnaissance ahead of an attack.',
+      sweep: 'One source probing the same port across many hosts — looking for which machines respond, not just one target.',
+      beacon: 'This pair keeps connecting at suspiciously regular intervals. Malware C2 check-ins often look exactly like this — but so do ordinary phone-home heartbeats from legitimate apps and IoT devices. Timing alone can\'t tell them apart; what matters is whether you recognize the destination.',
+      dnstunnel: 'Unusually long, random-looking, or high-volume subdomain queries — a common way to smuggle data out through DNS, which is rarely blocked by firewalls.',
+      synflood: 'A flood of unanswered inbound SYNs, from many sources or at a very high rate — denial-of-service or an aggressive scanner.',
+      arpspoof: 'The same IP address was just claimed by a different MAC address. On a real network this can mean a machine rejoined with a new NIC — or someone is poisoning the ARP cache to intercept traffic.',
+    };
+    const p = m.pkt;
+    return `
+      <div class="flex items-center gap-2 mb-2 flex-wrap">${severityBadge}</div>
+      <div class="badge bg-slate-200/10 text-slate-100 mb-2">${esc(ANOMALY_LABELS[m.kind] ?? m.kind)}</div>
+      <p class="text-slate-400 mb-2">${esc(hints[m.kind] ?? '')}</p>
+      ${m.attempts > 1 ? this.row('Recurrences', esc(`×${m.attempts}`)) : ''}
+      ${this.row('Target', esc(m.target))}
+      ${m.src ? this.row('Source', esc(m.src)) : ''}
+      ${this.row('Evidence', esc(m.extra))}
+      ${p ? this.row('Last seen', esc(fmtTime(p.ts))) : ''}
+    `;
+  }
+
+  /** Threat-detection panel — counters since the session/capture started.
+   *  Panel itself stays visible always (so people know the feature exists),
+   *  but the numbers only light up red once something has actually fired. */
+  renderThreats(counts) {
+    const total = counts.portscan + counts.sweep + counts.beacon
+      + counts.dnstunnel + counts.synflood + counts.arpspoof;
+    const set = (id, n) => {
+      const el = this.el[id];
+      if (!el) return;
+      el.textContent = n.toLocaleString();
+      el.className = n > 0 ? 'text-red-400' : 'text-slate-200';
+    };
+    set('threat-portscan', counts.portscan);
+    set('threat-sweep', counts.sweep);
+    set('threat-beacon', counts.beacon);
+    set('threat-dnstunnel', counts.dnstunnel);
+    set('threat-synflood', counts.synflood);
+    set('threat-arpspoof', counts.arpspoof);
+    const totalEl = this.el['threat-total'];
+    if (totalEl) {
+      totalEl.textContent = total.toLocaleString();
+      totalEl.className = total > 0 ? 'text-red-400 font-bold' : 'text-emerald-400 font-bold';
+    }
   }
 
   toast(message, kind = 'info') {

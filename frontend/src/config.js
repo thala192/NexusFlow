@@ -153,6 +153,23 @@ export const TYPE_SPECS = {
   drone:      { cap: 200, len: 2.4 },
   cart:       { cap: 140, len: 3.2 },
   convoy:     { cap: 120, len: 11.0 },
+  siren:      { cap: 16,  len: 5.6 },
+};
+
+// Threat-detection siren colors per anomaly kind — shown as the beacon
+// strobe and in the THREAT panel. Severity, not protocol, drives the color:
+// red = active attack pattern, amber = suspicious-but-ambiguous.
+export const ANOMALY_COLORS = CB ? {
+  portscan: 0xd55e00, sweep: 0xd55e00, synflood: 0xd55e00, arpspoof: 0xd55e00,
+  beacon: 0xe69f00, dnstunnel: 0xe69f00,
+} : {
+  portscan: 0xff1744, sweep: 0xff1744, synflood: 0xff1744, arpspoof: 0xff1744,
+  beacon: 0xfbbf24, dnstunnel: 0xfbbf24,
+};
+
+export const ANOMALY_LABELS = {
+  portscan: 'Port scan', sweep: 'Network sweep', beacon: 'Beaconing (possible C2)',
+  dnstunnel: 'DNS tunneling', synflood: 'SYN flood', arpspoof: 'ARP spoofing',
 };
 
 export const FLAG_NAMES = {
