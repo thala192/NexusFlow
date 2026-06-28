@@ -20,7 +20,7 @@ export class StatsEngine {
     const sec = Math.floor(p.ts);
     let b = this.buckets.get(sec);
     if (!b) {
-      b = { pkts: 0, bytes: 0, bytesIn: 0, bytesOut: 0, bcast: 0, protos: new Map(), talkers: new Map() };
+      b = { pkts: 0, bytes: 0, bytesIn: 0, bytesOut: 0, bcast: 0, protos: new Map(), talkers: new Map(), countries: new Map() };
       this.buckets.set(sec, b);
     }
     b.pkts++;
@@ -35,6 +35,17 @@ export class StatsEngine {
       const tk = b.talkers.get(ip) ?? { bytes: 0, pkts: 0 };
       tk.bytes += p.size; tk.pkts++;
       b.talkers.set(ip, tk);
+    }
+    // country: whichever endpoint actually resolved (the other is usually
+    // the local/private side and has no geo data) — a packet between two
+    // foreign IPs (rare; only possible in a PCAP captured elsewhere) would
+    // double-count both, which is an acceptable edge case for a glanceable
+    // breakdown, not a billing-grade metric.
+    const g = p.geo_dst ?? p.geo_src;
+    if (g?.country_code) {
+      const c = b.countries.get(g.country_code) ?? { bytes: 0, pkts: 0, name: g.country_name };
+      c.bytes += p.size; c.pkts++;
+      b.countries.set(g.country_code, c);
     }
     this.totalPkts++;
     this.totalBytes += p.size;
@@ -53,6 +64,7 @@ export class StatsEngine {
     let bwIn = 0, bwOut = 0, pps = 0, winPkts = 0, bcastPps = 0, bcastWin = 0;
     const protos = new Map();
     const talkers = new Map();
+    const countries = new Map();
     const series = new Float64Array(this.windowSec); // bytes/sec, oldest first
     const laneSeries = new Float64Array(this.windowSec * N_LANES); // stacked by lane
 
@@ -76,6 +88,11 @@ export class StatsEngine {
         agg.bytes += v.bytes; agg.pkts += v.pkts;
         talkers.set(ip, agg);
       }
+      for (const [cc, v] of b.countries) {
+        const agg = countries.get(cc) ?? { bytes: 0, pkts: 0, name: v.name };
+        agg.bytes += v.bytes; agg.pkts += v.pkts;
+        countries.set(cc, agg);
+      }
     }
     if (pps === 0) pps = this.buckets.get(nowSec)?.pkts ?? 0; // first second of a stream
 
@@ -95,6 +112,10 @@ export class StatsEngine {
         .map(([ip, v]) => ({ ip, ...v }))
         .sort((a, b) => b.bytes - a.bytes)
         .slice(0, 5),
+      topCountries: [...countries.entries()]
+        .map(([cc, v]) => ({ cc, ...v }))
+        .sort((a, b) => b.bytes - a.bytes)
+        .slice(0, 6),
       buckets: series,
       laneSeries,
     };

@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import {
   ANOMALY_COLORS, FAIL_RED, FLAG_COLORS, HALF_LEN, HIGHWAY, LANES, LANE_REPR, LANE_SPEED,
-  PROTO_COLORS, TYPE_SPECS, flowKeyOf, laneFor, sublaneX, vehicleTypeFor,
+  PROTO_COLORS, TYPE_SPECS, flowKeyOf, glowColorFor, laneFor, sublaneX, vehicleTypeFor,
 } from './config.js';
 import { FlarePool, LabelPool, VehiclePool } from './vehicles.js';
 
@@ -148,6 +148,7 @@ export class TrafficController {
     const dirSign = dirKey === 'in' ? 1 : -1;
     const center = this.laneX[lane][dirKey];
     const speed = LANE_SPEED[lane];
+    const glowColor = glowColorFor(meta); // null if no region resolved — stays unlit
 
     if (type === 'drone') {
       // airborne: altitude separation, no sub-lane bookkeeping needed —
@@ -155,7 +156,7 @@ export class TrafficController {
       // longitudinally if spawned apart; altitude varies the rest
       const rec = this.pools.drone.spawn({
         x: center + (Math.random() - 0.5) * 2.4, dirSign, speed, color, scaleL, meta,
-        len: spec.len, yBase: 3.0 + Math.random() * 2.4,
+        len: spec.len, yBase: 3.0 + Math.random() * 2.4, glowColor,
       });
       this.afterSpawn(this.pools.drone, rec, lane, dirKey, -1);
       return rec;
@@ -166,7 +167,7 @@ export class TrafficController {
     const rec = this.pools[type].spawn({
       x: sublaneX(center, dirKey, sub) + (Math.random() - 0.5) * 0.7,
       dirSign, speed, color, scaleL, meta, len: spec.len, yBase: 0,
-      beaconColor,
+      beaconColor, glowColor,
     });
     this.tails.set(`${laneKey}|${sub}`, rec);
     this.lastSub.set(laneKey, sub);

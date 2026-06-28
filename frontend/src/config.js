@@ -172,6 +172,49 @@ export const ANOMALY_LABELS = {
   dnstunnel: 'DNS tunneling', synflood: 'SYN flood', arpspoof: 'ARP spoofing',
 };
 
+// GeoIP underglow: a subtle ground-level tint by continent, intentionally
+// coarse (6 buckets, not ~190 country colors) so it reads at a glance
+// without competing with the protocol/flag color language on the vehicle
+// bodies themselves. Off by default per-vehicle — only lit when a region is
+// actually resolved (private/unallocated addresses show no glow at all,
+// which is itself an honest signal: "no public geolocation").
+const REGION_BY_COUNTRY = {
+  US: 'na', CA: 'na', MX: 'na',
+  BR: 'sa', AR: 'sa', CL: 'sa', CO: 'sa', PE: 'sa',
+  GB: 'eu', DE: 'eu', FR: 'eu', NL: 'eu', IE: 'eu', SE: 'eu', ES: 'eu', IT: 'eu',
+  PL: 'eu', CH: 'eu', BE: 'eu', AT: 'eu', FI: 'eu', NO: 'eu', DK: 'eu', PT: 'eu',
+  RU: 'eu', UA: 'eu',
+  CN: 'as', JP: 'as', IN: 'as', KR: 'as', SG: 'as', HK: 'as', TW: 'as', ID: 'as',
+  TH: 'as', VN: 'as', PH: 'as', MY: 'as', PK: 'as', BD: 'as', IL: 'as', AE: 'as',
+  SA: 'as', TR: 'as',
+  AU: 'oc', NZ: 'oc',
+  ZA: 'af', NG: 'af', EG: 'af', KE: 'af', MA: 'af',
+};
+
+export const REGION_COLORS = CB ? {
+  na: 0x0072b2, sa: 0xcc79a7, eu: 0x009e73, as: 0xe69f00, oc: 0x56b4e9, af: 0xd55e00,
+} : {
+  na: 0x3b82f6, sa: 0xec4899, eu: 0x22c55e, as: 0xf59e0b, oc: 0x06b6d4, af: 0xf97316,
+};
+
+export const REGION_LABELS = {
+  na: 'North America', sa: 'South America', eu: 'Europe',
+  as: 'Asia', oc: 'Oceania', af: 'Africa',
+};
+
+export function regionOf(countryCode) {
+  return countryCode ? (REGION_BY_COUNTRY[countryCode] ?? null) : null;
+}
+
+/** Underglow color for a packet, or null if neither endpoint resolved to a
+ *  known region (private/reserved addresses, or a country outside the
+ *  coarse table above — in which case no glow beats a wrong-looking one). */
+export function glowColorFor(p) {
+  const g = p?.geo_dst ?? p?.geo_src;
+  const region = regionOf(g?.country_code);
+  return region ? REGION_COLORS[region] : null;
+}
+
 export const FLAG_NAMES = {
   F: 'FIN', S: 'SYN', R: 'RST', P: 'PSH', A: 'ACK', U: 'URG', E: 'ECE', C: 'CWR',
 };

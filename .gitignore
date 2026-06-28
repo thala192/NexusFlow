@@ -4,4 +4,8 @@ __pycache__/
 *.pcap
 *.pcapng
 .DS_Store
-.git
+
+# Optional city-level GeoIP database (see tools/fetch_city_geoip.py) — a
+# multi-MB binary that shouldn't be committed; country+ASN data is always
+# available bundled with the geoip2fast pip package without this file.
+backend/geoip2fast-city*.dat.gz

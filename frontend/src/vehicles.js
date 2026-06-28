@@ -163,6 +163,12 @@ function parkMatrix() {
 }
 
 export class VehiclePool {
+  static glowEnabled = false; // shared toggle across every pool instance — see main.js's UI wiring
+
+  static setGlowEnabled(on) {
+    VehiclePool.glowEnabled = on;
+  }
+
   constructor(scene, type) {
     const spec = TYPE_SPECS[type];
     this.type = type;
@@ -208,6 +214,36 @@ export class VehiclePool {
       scene.add(this.beacons);
     }
 
+    // GeoIP underglow: a flat, low-opacity disc just above the road surface,
+    // tinted by the packet's resolved continent. Toggled by main.js calling
+    // VehiclePool.setGlowEnabled(); off by default so the highway isn't
+    // cluttered until someone asks for it. Excluded for drones (UDP, flying
+    // — a ground glow under something airborne would look disconnected).
+    this.glow = null;
+    if (type !== 'drone') {
+      this.glowMat = new THREE.MeshBasicMaterial({
+        vertexColors: true, transparent: true, opacity: 0, toneMapped: false, depthWrite: false,
+      });
+      // Rotate the GEOMETRY itself (not the InstancedMesh object) so it lies
+      // flat — CircleGeometry is built facing +Z by default. Rotating the
+      // mesh object instead would compound with every per-instance matrix
+      // set in update() below, since those are plain world-space
+      // position/scale and assume an unrotated local frame; verified this
+      // the hard way (a mesh.rotation.x approach put the discs ~10 units in
+      // the air instead of on the ground).
+      const glowGeo = new THREE.CircleGeometry(spec.len * 0.85, 16);
+      glowGeo.rotateX(-Math.PI / 2);
+      this.glow = new THREE.InstancedMesh(glowGeo, this.glowMat, this.cap);
+      this.glow.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.glow.frustumCulled = false;
+      this.glow.raycast = () => {};
+      for (let i = 0; i < this.cap; i++) {
+        this.glow.setMatrixAt(i, parkMatrix());
+        this.glow.setColorAt(i, _color.set(0xffffff));
+      }
+      scene.add(this.glow);
+    }
+
     this.free = [];
     for (let i = this.cap - 1; i >= 0; i--) this.free.push(i);
     this.active = new Map(); // idx -> record (insertion order = age)
@@ -247,6 +283,13 @@ export class VehiclePool {
       this.beacons.setColorAt(idx, _color.set(opts.beaconColor ?? 0xffffff));
       this.beacons.instanceColor.needsUpdate = true;
     }
+    if (this.glow) {
+      rec.glowColor = opts.glowColor ?? null; // null = no region resolved, stays invisible
+      if (rec.glowColor != null) {
+        this.glow.setColorAt(idx, _color.set(rec.glowColor));
+        this.glow.instanceColor.needsUpdate = true;
+      }
+    }
     return rec;
   }
 
@@ -258,6 +301,7 @@ export class VehiclePool {
     this.mesh.setMatrixAt(idx, parkMatrix());
     if (this.lights) this.lights.setMatrixAt(idx, parkMatrix());
     if (this.beacons) this.beacons.setMatrixAt(idx, parkMatrix());
+    if (this.glow) this.glow.setMatrixAt(idx, parkMatrix());
     this.free.push(idx);
   }
 
@@ -290,10 +334,23 @@ export class VehiclePool {
         _dummy.updateMatrix();
         this.beacons.setMatrixAt(rec.idx, _dummy.matrix);
       }
+      if (this.glow && rec.glowColor != null && VehiclePool.glowEnabled) {
+        _dummy.position.set(rec.x, 0.04, rec.z); // flush on the road, ignores bob/drone height
+        _dummy.rotation.set(0, 0, 0); // geometry is pre-rotated flat; no per-instance tilt needed
+        _dummy.scale.set(grow, grow, grow);
+        _dummy.updateMatrix();
+        this.glow.setMatrixAt(rec.idx, _dummy.matrix);
+      } else if (this.glow) {
+        this.glow.setMatrixAt(rec.idx, parkMatrix());
+      }
     }
     for (const idx of done) this.release(idx);
     this.mesh.instanceMatrix.needsUpdate = true;
     if (this.lights) this.lights.instanceMatrix.needsUpdate = true;
+    if (this.glow) {
+      this.glow.instanceMatrix.needsUpdate = true;
+      this.glowMat.opacity = VehiclePool.glowEnabled ? 0.35 : 0;
+    }
     if (this.beacons) {
       this.beacons.instanceMatrix.needsUpdate = true;
       this.beaconMat.opacity = 0.3 + 0.7 * Math.abs(Math.sin(t * (this.type === 'siren' ? 14 : 9)));

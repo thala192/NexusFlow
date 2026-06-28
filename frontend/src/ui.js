@@ -1,5 +1,5 @@
 
-import { ANOMALY_LABELS, FAIL_RED, FLAG_COLORS, FLAG_NAMES, LEGEND, PROTO_CSS, THEME, flowKeyOf, isBroadcast } from './config.js';
+import { ANOMALY_LABELS, FAIL_RED, FLAG_COLORS, FLAG_NAMES, LEGEND, PROTO_CSS, REGION_COLORS, REGION_LABELS, THEME, flowKeyOf, isBroadcast } from './config.js';
 
 const hex = (n) => '#' + n.toString(16).padStart(6, '0');
 import { drawHistogram, drawSparkline } from './histogram.js';
@@ -19,6 +19,15 @@ export function fmtTime(ts) {
   const d = new Date(ts * 1000);
   const ms = String(Math.floor((ts % 1) * 1000)).padStart(3, '0');
   return `${d.toLocaleTimeString([], { hour12: false })}.${ms}`;
+}
+
+/** ISO 3166-1 alpha-2 code -> flag emoji via Unicode regional indicators —
+ *  no flag image data needed, every modern OS renders these natively. */
+function countryFlag(cc) {
+  if (!cc || cc.length !== 2) return '🌐';
+  const A = 0x1f1e6;
+  const base = 'A'.charCodeAt(0);
+  return String.fromCodePoint(A + cc.charCodeAt(0) - base, A + cc.charCodeAt(1) - base);
 }
 
 const ICMP_NAMES_V4 = {
@@ -45,8 +54,9 @@ export class UI {
     for (const id of [
       'tab-live', 'tab-pcap', 'live-controls', 'pcap-controls', 'iface-select',
       'bpf-input', 'btn-capture', 'file-input', 'btn-sample', 'pcap-meta', 'filter-input',
+      'btn-geoglow',
       'stat-bw-in', 'stat-bw-out', 'stat-total', 'spark-canvas', 'proto-list',
-      'talkers-list', 'legend-list', 'hud-fps', 'hud-active', 'hud-pps',
+      'talkers-list', 'countries-list', 'legend-list', 'hud-fps', 'hud-active', 'hud-pps',
       'hud-merged', 'hud-recycled', 'hud-dropped',
       'tcph-est', 'tcph-pending', 'tcph-half', 'tcph-refused', 'tcph-rst',
       'tcph-retries', 'tcph-retrans', 'tcph-rtt', 'tcph-bar',
@@ -107,6 +117,18 @@ export class UI {
       themeBtn.title = 'colorblind-safe palette ON — click for the night palette';
     }
     themeBtn.addEventListener('click', () => this.cb.onThemeToggle());
+
+    // GeoIP underglow toggle — off by default, see vehicles.js's VehiclePool.glowEnabled
+    const glowBtn = this.el['btn-geoglow'];
+    glowBtn.addEventListener('click', () => {
+      const on = this.cb.onGeoGlowToggle();
+      glowBtn.classList.toggle('bg-violet-500/20', on);
+      glowBtn.classList.toggle('text-violet-300', on);
+      glowBtn.classList.toggle('border-violet-500/50', on);
+      glowBtn.title = on
+        ? 'GeoIP underglow ON — click to hide'
+        : "toggle GeoIP underglow — tints each vehicle's ground glow by the resolved continent of one endpoint";
+    });
 
     // health rows drill down into recent evidence
     const drill = {
@@ -192,6 +214,10 @@ export class UI {
         (<span class="text-amber-300">no answer</span> ·
         <span style="color:${hex(FAIL_RED)}">refused / bad name</span>) — repeats grow them; click for the story</div>
       <div class="text-slate-400">🚓 Dark SUV on the shoulder, red/blue light bar = a detected threat pattern — click it for the evidence</div>
+      <div class="text-slate-400">🌐 GeoIP underglow (toggle in the top bar) tints each vehicle's ground glow by continent:
+        ${Object.entries(REGION_LABELS).map(([k, label]) =>
+          `<span style="color:${hex(REGION_COLORS[k])}">${esc(label)}</span>`).join(' · ')}
+        — no glow means no public geolocation (private network, or an address that isn't really allocated)</div>
       <div class="text-slate-500 mt-1">right side → inbound · left side → outbound · ×N road-train = burst · lane glow = load</div>
       <div class="text-slate-500">⏱ same-lane spacing = real inter-arrival timing · click a vehicle or talker to spotlight</div>`);
     this.el['legend-list'].innerHTML = rows.join('');
@@ -279,6 +305,17 @@ export class UI {
         </div>
         <span class="text-slate-400 w-14 text-right">${fmtBytes(t.bytes)}</span>
       </div>`).join('') || '<div class="text-slate-600">no traffic yet</div>';
+
+    const maxCB = s.topCountries?.[0]?.bytes || 1;
+    this.el['countries-list'].innerHTML = (s.topCountries ?? []).map((c) => `
+      <div class="flex items-center gap-2">
+        <span class="w-6 text-center shrink-0">${countryFlag(c.cc)}</span>
+        <span class="w-24 truncate text-slate-300">${esc(c.name ?? c.cc)}</span>
+        <div class="grow h-1.5 bg-slate-800 rounded-full overflow-hidden">
+          <div class="h-full bg-violet-500/80 rounded-full" style="width:${((c.bytes / maxCB) * 100).toFixed(1)}%"></div>
+        </div>
+        <span class="text-slate-400 w-14 text-right">${fmtBytes(c.bytes)}</span>
+      </div>`).join('') || '<div class="text-slate-600">no geolocated traffic yet</div>';
 
     if (flow) {
       const c = flow.counts;
@@ -412,6 +449,19 @@ export class UI {
       </button>`;
   }
 
+  /** Country/ASN rows for whichever endpoint actually resolved (the other
+   *  side is usually local/private and has no geo data either way). */
+  geoRows(p) {
+    if (!p) return '';
+    const g = p.geo_dst ?? p.geo_src;
+    if (!g) return '';
+    const who = p.geo_dst ? 'Destination' : 'Source';
+    return `
+      ${this.row(`${who} location`, `${countryFlag(g.country_code)} ${esc(g.city_name ? g.city_name + ', ' : '')}${esc(g.country_name ?? g.country_code)}`)}
+      ${g.asn_name ? this.row('Network (ASN)', esc(g.asn_name)) : ''}
+    `;
+  }
+
   packetDetail(p) {
     const flagStr = p.flags
       ? p.flags.split('').map((f) => FLAG_NAMES[f] ?? f).join(' + ')
@@ -442,6 +492,7 @@ export class UI {
       ${dnsRow}
       ${sni ? this.row('Server name (SNI)', esc(sni)) : ''}
       ${this.row('Packet #', esc('#' + p.id))}
+      ${this.geoRows(p)}
       ${this.conversationButton(p)}
     `;
   }
@@ -492,6 +543,7 @@ export class UI {
       ${m.rst ? this.row('Refused after', esc(`${((m.rst.ts - p.ts) * 1000).toFixed(1)} ms`)) : ''}
       ${this.row('Source MAC', esc(p.smac))}
       ${this.row('TTL', esc(p.ttl ?? '—'))}
+      ${this.geoRows(p)}
       ${this.conversationButton(p)}
     `;
   }
@@ -520,6 +572,7 @@ export class UI {
       ${this.row('Client', q ? `${esc(q.src)}:${esc(q.sport)}` : '—')}
       ${this.row('Resolver', esc(q ? q.dst : r?.src))}
       ${this.row('Txn id', esc(ref.dns_id ?? '—'))}
+      ${this.geoRows(q ?? r)}
       ${this.conversationButton(q ?? r)}
     `;
   }
@@ -537,6 +590,7 @@ export class UI {
       arpspoof: 'The same IP address was just claimed by a different MAC address. On a real network this can mean a machine rejoined with a new NIC — or someone is poisoning the ARP cache to intercept traffic.',
     };
     const p = m.pkt;
+    const srcGeo = p?.geo_src; // specifically the attacker's side — not "whichever resolved"
     return `
       <div class="flex items-center gap-2 mb-2 flex-wrap">${severityBadge}</div>
       <div class="badge bg-slate-200/10 text-slate-100 mb-2">${esc(ANOMALY_LABELS[m.kind] ?? m.kind)}</div>
@@ -544,6 +598,8 @@ export class UI {
       ${m.attempts > 1 ? this.row('Recurrences', esc(`×${m.attempts}`)) : ''}
       ${this.row('Target', esc(m.target))}
       ${m.src ? this.row('Source', esc(m.src)) : ''}
+      ${srcGeo ? this.row('Source location', `${countryFlag(srcGeo.country_code)} ${esc(srcGeo.city_name ? srcGeo.city_name + ', ' : '')}${esc(srcGeo.country_name ?? srcGeo.country_code)}`) : ''}
+      ${srcGeo?.asn_name ? this.row('Source network', esc(srcGeo.asn_name)) : ''}
       ${this.row('Evidence', esc(m.extra))}
       ${p ? this.row('Last seen', esc(fmtTime(p.ts))) : ''}
     `;

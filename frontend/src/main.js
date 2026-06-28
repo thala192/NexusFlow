@@ -3,6 +3,7 @@ import { ANOMALY_LABELS, flowKeyOf } from './config.js';
 import { createScene } from './scene.js';
 import { buildHighway } from './highway.js';
 import { TrafficController } from './traffic.js';
+import { VehiclePool } from './vehicles.js';
 import { Picker } from './picking.js';
 import { StatsEngine } from './stats.js';
 import { FlowTracker } from './flows.js';
@@ -165,6 +166,11 @@ const ui = new UI({
       localStorage.setItem('ph-theme', next);
     } catch { /* private mode */ }
     location.reload();
+  },
+  onGeoGlowToggle() {
+    const next = !VehiclePool.glowEnabled;
+    VehiclePool.setGlowEnabled(next);
+    return next;
   },
   onTalkerClick(ip) {
     traffic.setHighlight({ type: 'host', key: ip });

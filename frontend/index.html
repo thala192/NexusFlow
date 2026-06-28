@@ -96,6 +96,7 @@
       <div class="grow"></div>
       <button id="btn-shot" class="px-2 py-1 rounded-md text-[10px] font-bold border border-slate-700 text-slate-400 hover:text-slate-200 transition-colors" title="save a PNG of the current view">📷</button>
       <button id="btn-theme" class="px-2 py-1 rounded-md text-[10px] font-bold border border-slate-700 text-slate-400 hover:text-slate-200 transition-colors" title="toggle colorblind-safe palette">CB</button>
+      <button id="btn-geoglow" class="px-2 py-1 rounded-md text-[10px] font-bold border border-slate-700 text-slate-400 hover:text-slate-200 transition-colors" title="toggle GeoIP underglow — tints each vehicle's ground glow by the resolved continent of one endpoint">🌐</button>
       <div id="hud" class="num text-[11px] text-slate-400 flex gap-4">
         <span>FPS <b id="hud-fps" class="text-slate-100">—</b></span>
         <span>VEHICLES <b id="hud-active" class="text-slate-100">0</b></span>
@@ -180,6 +181,11 @@
         <section>
           <h2 class="text-[10px] font-bold tracking-[0.2em] text-slate-400 mb-2">TOP TALKERS <span class="text-slate-600">by bytes</span></h2>
           <div id="talkers-list" class="flex flex-col gap-1.5 text-xs num"></div>
+        </section>
+
+        <section>
+          <h2 class="text-[10px] font-bold tracking-[0.2em] text-slate-400 mb-2">TOP COUNTRIES <span class="text-slate-600">geoip</span></h2>
+          <div id="countries-list" class="flex flex-col gap-1.5 text-xs num"></div>
         </section>
 
         <section class="border-t border-slate-700/60 pt-3">

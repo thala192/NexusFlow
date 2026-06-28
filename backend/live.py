@@ -11,6 +11,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from .nexsus import get_local_ips, summarize_packet
 from .synth import DemoStream
+from . import geo
 
 log = logging.getLogger("packet-highway")
 
@@ -80,6 +81,7 @@ class LiveSession:
             items = stream.next_batch(time.time())
             for it in items:
                 it["id"] = next(self.ids)
+                geo.enrich(it)
             if items:
                 await self.ws.send_text(json.dumps({"type": "packets", "items": items}))
 
@@ -90,6 +92,7 @@ class LiveSession:
         def on_packet(pkt):  # runs in scapy's sniffer thread
             s = summarize_packet(pkt, next(self.ids), local_ips)
             if s:
+                geo.enrich(s)
                 loop.call_soon_threadsafe(self._enqueue, s)
 
         try:

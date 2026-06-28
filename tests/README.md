@@ -7,7 +7,20 @@ cd tests
 node test_anomaly.mjs            # replays a real 90s capture from the live demo backend
 node test_sweep_synthetic.mjs    # hand-built same-subnet sweep vs single-host scan
 node test_beacon_limitation.mjs  # documents a real limitation — see below
+node test_full_integration.mjs   # every tracker + the filter, together, against one real session
 ```
+
+### `test_full_integration.mjs`
+
+Runs `FlowTracker`, `DnsTracker`, `AnomalyTracker`, `FlowLog`, and `StatsEngine`
+together against one real 60-second captured session, with `PacketFilter` applied
+first — mirroring `main.js`'s actual live-mode pipeline order exactly, rather than
+testing each tracker in isolation the way the other tests do. Checks for crashes,
+`NaN`/missing-field leaks in the stats snapshot, and that a flow is immediately
+retrievable from `FlowLog` right after being added (not that it stays retrievable
+forever — `MAX_FLOWS=400` deliberately evicts old flows under capacity pressure by
+design; a real 60s session here touched 756 distinct flows, so the cap does bite in
+practice, not just in theory).
 
 ### `test_beacon_limitation.mjs`
 

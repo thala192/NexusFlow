@@ -24,6 +24,10 @@ NexusFlow is live and accessible online:
 
 Experience real-time 3D network traffic visualization, packet analytics, PCAP replay, and protocol-aware monitoring directly from your browser.
 
+> Note: this deployed instance reflects whatever version was last pushed to it —
+> it may not include the threat detection, GeoIP, filter bar, or conversation view
+> features described below until it's redeployed from the latest code.
+
 
 ## Features
 
@@ -49,12 +53,30 @@ Supports visualization and monitoring of:
 - TCP / UDP
 - ARP
 
+### Threat Detection
+Heuristic anomaly detection running client-side on every packet:
+
+- Port scans and network sweeps (subnet-scoped, won't false-positive on ordinary multi-host browsing)
+- Beaconing / possible C2 check-ins (regular-interval connections — flagged with an honest caveat that legitimate heartbeat traffic looks the same on timing alone)
+- DNS tunneling (long, high-entropy, or high-volume subdomain queries)
+- SYN floods
+- ARP spoofing
+- Detected threats spawn a dedicated alert vehicle on the road shoulder and surface in a dedicated THREAT DETECTION panel
+
+### GeoIP Enrichment
+- Country and ASN lookup for every public IP, via a bundled offline database (no API key, no account)
+- Optional city-level upgrade (see `tools/fetch_city_geoip.py`)
+- Per-packet location/network shown in the detail panel
+- Top Countries breakdown alongside Top Talkers
+- Toggleable ground-level underglow on the 3D highway, tinted by continent
+
 ### Interactive Dashboard
 - Real-time bandwidth monitoring
 - Protocol distribution analysis
-- Top talkers identification
-- Network health monitoring
+- Top talkers and top countries identification
+- Network health monitoring (TCP/DNS failure tracking, broadcast storm detection)
 - Flow inspection panel
+- Live display filter (`ip:`, `port:`, `proto:`, `sni:`, `flags:`, `dir:` — works in both live and PCAP mode, narrows what feeds the health/threat panels too, not just what's drawn)
 
 ### PCAP Replay Engine
 - Upload `.pcap` and `.pcapng` files
@@ -71,6 +93,8 @@ Inspect:
 - TCP flags
 - Packet sizes
 - Timestamps
+- GeoIP location and ASN
+- Full conversation view — every retained packet in a flow, in sequence, one click away from any packet/flow/DNS detail panel
 
 ### Modern Visualization
 - Three.js powered rendering
@@ -109,6 +133,7 @@ NexusFlow
 │
 ├── backend
 │   ├── app.py
+│   ├── geo.py
 │   ├── live.py
 │   ├── nexsus.py
 │   ├── synth.py
@@ -118,9 +143,11 @@ NexusFlow
 ├── frontend
 │   ├── index.html
 │   └── src
+│       ├── anomaly.js
 │       ├── config.js
 │       ├── dns.js
 │       ├── filter.js
+│       ├── flowlog.js
 │       ├── flows.js
 │       ├── highway.js
 │       ├── histogram.js
@@ -134,9 +161,28 @@ NexusFlow
 │       ├── ui.js
 │       └── vehicles.js
 │
+├── tests
+│   ├── README.md
+│   ├── test_anomaly.mjs
+│   ├── test_beacon_limitation.mjs
+│   ├── test_full_integration.mjs
+│   ├── test_sweep_synthetic.mjs
+│   ├── captured_packets.json
+│   └── integration_fixture.json
+│
+├── tools
+│   └── fetch_city_geoip.py
+│
 ├── run.py
+├── CHANGES.md
 └── README.md
 ```
+
+`backend/geo.py` optionally loads a city-level GeoIP database if one is present
+next to it (`geoip2fast-city-asn.dat.gz` or `geoip2fast-city.dat.gz`) — see
+`tools/fetch_city_geoip.py` to download one. Without it, country + ASN data is
+always available (bundled with the `geoip2fast` pip package, no extra download,
+no API key).
 
 ---
 
@@ -261,6 +307,7 @@ NexusFlow uses optimized rendering techniques to maintain smooth visualization p
 - WebGL rendering
 - Real-time streaming
 - Optimized Three.js scene management
+- GeoIP lookups are cached and benchmark at ~4 microseconds each — negligible even under sustained live capture load
 
 ---
 
@@ -282,15 +329,17 @@ This project demonstrates:
 
 ## Future Enhancements
 
-- Threat Detection
-- Anomaly Detection
-- GeoIP Mapping
-- Traffic Forecasting
-- Session Analytics
-- Cloud Deployment
-- User Authentication
-- Saved Filters & Views
-- AI-Powered Network Insights
+- Traffic forecasting
+- Session analytics
+- Cloud deployment
+- User authentication
+- Saved filters & views
+- AI-powered network insights
+- Real-world calibration of the threat detectors against a known-malicious capture (the current heuristics are tuned against synthetic demo traffic — see `CHANGES.md`)
+
+Already shipped: threat/anomaly detection, GeoIP mapping, live display filtering,
+and full conversation/flow inspection — see `CHANGES.md` for the detailed history
+of how each was built and validated.
 
 ---
 

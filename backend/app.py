@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from .live import LiveSession
 from .nexsus import list_interfaces, parse_pcap_bytes, parse_pcap_path
 from .synth import build_sample_pcap_bytes
+from . import geo
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 log = logging.getLogger("packet-highway")
@@ -25,6 +26,13 @@ MAX_UPLOAD = 250 * 1024 * 1024  # 250 MB
 DEFAULT_LIMIT = 50_000
 
 app = FastAPI(title="NexusFlow Network Intelligence Engine")
+
+
+@app.on_event("startup")
+async def _startup():
+    # GeoIP's .dat.gz load takes tens of ms and touches disk — keep it off
+    # the event loop, same reasoning as get_local_ips() in live.py.
+    await asyncio.to_thread(geo.init)
 
 
 @app.middleware("http")
@@ -40,6 +48,15 @@ async def _serialize(result: dict) -> Response:
     # timelines can be 200k packets — serialize off the event loop
     payload = await asyncio.to_thread(json.dumps, result)
     return Response(content=payload, media_type="application/json")
+
+
+def _enrich_result(result: dict) -> dict:
+    """GeoIP-enrich every packet in a parsed pcap result, in place. Run via
+    asyncio.to_thread alongside the parse itself — large captures can have
+    up to 200k packets, and even microsecond lookups add up at that volume."""
+    for p in result.get("packets", ()):
+        geo.enrich(p)
+    return result
 
 
 @app.get("/api/interfaces")
@@ -75,6 +92,7 @@ async def api_pcap(
             return JSONResponse({"error": "Empty file."}, status_code=400)
         try:
             result = await asyncio.to_thread(parse_pcap_path, path, limit)
+            await asyncio.to_thread(_enrich_result, result)
         except Exception as exc:
             log.exception("pcap parse failed")
             return JSONResponse({"error": f"Could not parse capture: {exc}"}, status_code=400)
@@ -95,6 +113,7 @@ async def api_pcap(
 async def api_sample(limit: int = Query(DEFAULT_LIMIT, ge=100, le=200_000)):
     data = await asyncio.to_thread(build_sample_pcap_bytes)
     result = await asyncio.to_thread(parse_pcap_bytes, data, limit)
+    await asyncio.to_thread(_enrich_result, result)
     result["meta"]["filename"] = "sample-traffic.pcap"
     return await _serialize(result)
 
